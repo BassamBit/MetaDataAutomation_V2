@@ -1,45 +1,49 @@
-import io, re, numpy as np, pandas as pd, streamlit as st
+import io
+import re
+import numpy as np
+import pandas as pd
+import streamlit as st
 from pptx import Presentation
 from pptx.util import Pt
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.dml.color import RGBColor
 from pptx.oxml.ns import qn
 
+# === Streamlit basic config ===
 st.set_page_config(page_title="Metadata Automation", page_icon="📊", layout="centered")
-st.title("📘 Metadata Automation Tool")
-st.caption("Generate Dictionary and TOC PowerPoint files from your Excel dataset.")
 
-# --------------------------------------------------------------------
-# Sidebar settings
-# --------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Settings")
-    mode = st.radio("Select Mode", ["Dictionary", "TOC"])
-    st.markdown("---")
-    st.caption("Upload your Excel and PowerPoint template below.")
+st.title("📊 Metadata → PowerPoint Generator")
+st.caption("Upload your Excel file and PowerPoint templates to automatically generate Dictionary and TOC slides.")
 
-# --------------------------------------------------------------------
-# File uploads
-# --------------------------------------------------------------------
-pptx_file = st.file_uploader("📎 Upload PowerPoint Template", type=["pptx"])
-data_file = st.file_uploader("📎 Upload Excel File", type=["xlsx", "xls", "csv"])
+# --- Sidebar selection ---
+tool = st.sidebar.radio("Select a tool:", ["📗 Dictionary Generator", "📑 TOC Generator"])
 
+# --- File upload ---
+pptx_template = st.file_uploader("Upload PowerPoint Template (.pptx)", type=["pptx"])
+data_file = st.file_uploader("Upload Excel File (.xlsx or .xls)", type=["xlsx", "xls"])
+
+# --- Load Excel and show sheet dropdown ---
 sheet_name = None
-if data_file is not None and data_file.name.lower().endswith((".xlsx", ".xls")):
+if data_file:
     try:
         xls = pd.ExcelFile(data_file)
-        sheet_name = st.selectbox("Select sheet", options=xls.sheet_names, index=0)
-    except Exception:
-        sheet_name = None
+        sheet_name = st.selectbox("Select Worksheet", xls.sheet_names)
+        df = pd.read_excel(data_file, sheet_name=sheet_name)
+        st.success(f"✅ Loaded data: {df.shape[0]} rows × {df.shape[1]} columns")
+    except Exception as e:
+        st.error(f"Error reading Excel file: {e}")
+        st.stop()
+else:
+    st.info("Please upload an Excel file to continue.")
+    st.stop()
 
-# --------------------------------------------------------------------
-# Constants
-# --------------------------------------------------------------------
+# --- colors ---
 COLOR_DARK_BLUE = RGBColor(31, 78, 121)
 COLOR_BLACK = RGBColor(0, 0, 0)
 COLOR_GREEN = RGBColor(82, 158, 69)
 COLOR_ORANGE = RGBColor(237, 125, 49)
 
+# === Common helpers ===
 def _clear_cell(cell):
     tf = cell.text_frame
     tf.clear()
@@ -58,173 +62,147 @@ def _add_run(p, text, size_pt=11, color=COLOR_BLACK, bold=False):
     run.font.color.rgb = color
     run.font.bold = bold
 
+def get_first_table(slide):
+    for sh in slide.shapes:
+        if sh.has_table:
+            return sh.table
+    raise RuntimeError("No table found in this slide.")
+
 def set_cell_rtl(cell, rtl=True):
     txBody = cell._tc.txBody
     bodyPr = txBody.bodyPr
-    bodyPr.set(qn('a:rtlCol'), '1' if rtl else '0')
+    bodyPr.set(qn("a:rtlCol"), "1" if rtl else "0")
     for p in cell.text_frame.paragraphs:
         pPr = p._p.get_or_add_pPr()
-        pPr.set(qn('a:rtl'), '1' if rtl else '0')
+        pPr.set(qn("a:rtl"), "1" if rtl else "0")
 
-def combine_name_definition(name_series, def_series, add_colon=True):
-    name_series = name_series.fillna("").astype(str)
-    def_series = def_series.fillna("").astype(str)
-    result = []
-    for n, d in zip(name_series, def_series):
-        n = n.strip()
-        d = d.strip()
-        if not n and not d:
-            result.append("")
-        elif add_colon:
-            result.append(f"{n}:\n{d}" if d else n)
-        else:
-            result.append(f"{n}\n{d}" if d else n)
-    return result
+# === Page 1: Dictionary Generator ===
+if tool == "📗 Dictionary Generator":
+    st.header("📗 Dictionary Generator")
 
-# --------------------------------------------------------------------
-# Execution button
-# --------------------------------------------------------------------
-run = st.button("🚀 Generate", type="primary", use_container_width=True)
+    colnames = df.columns.tolist()
+    st.markdown("#### Select columns from your Excel file:")
+    code_col = st.selectbox("Code Column", colnames)
+    en_name_col = st.selectbox("English Name Column", colnames)
+    en_def_col = st.selectbox("English Definition Column", colnames)
+    classification_col = st.selectbox("Classification Column", colnames)
+    ar_name_col = st.selectbox("Arabic Name Column", colnames)
+    ar_def_col = st.selectbox("Arabic Definition Column", colnames)
 
-if run:
-    if data_file is None or pptx_file is None:
-        st.error("Please upload both the Excel file and PowerPoint template.")
-        st.stop()
+    st.markdown("#### Enter fixed values:")
+    owner_en = st.text_input("Data Owner (English)", "Legal Department")
+    owner_ar = st.text_input("Data Owner (Arabic)", "الإدارة القانونية")
 
-    # Load Excel
-    if data_file.name.lower().endswith(".csv"):
-        df = pd.read_csv(data_file)
-    else:
-        df = pd.read_excel(data_file, sheet_name=sheet_name)
+    if st.button("Generate Dictionary ✅", use_container_width=True):
+        try:
+            prs = Presentation(io.BytesIO(pptx_template.read()))
+            ROWS_PER_SLIDE = 9
 
-    st.success(f"Loaded {df.shape[0]} rows × {df.shape[1]} columns.")
+            chunks = [df.iloc[i:i+ROWS_PER_SLIDE] for i in range(0, len(df), ROWS_PER_SLIDE)]
+            if len(prs.slides) < len(chunks):
+                st.warning(f"⚠ Template has {len(prs.slides)} slides but you need {len(chunks)}.")
 
-    prs = Presentation(io.BytesIO(pptx_file.read()))
+            for idx, chunk in enumerate(chunks):
+                slide = prs.slides[idx]
+                table = get_first_table(slide)
+                for r in range(1, len(table.rows)):
+                    for c in range(len(table.columns)):
+                        table.cell(r, c).text = ""
 
-    if mode == "Dictionary":
-        st.subheader("📗 Dictionary Settings")
-
-        owner_ar = st.text_input("Data Owner (Arabic)", value="الإدارة القانونية")
-        owner_en = st.text_input("Data Owner (English)", value="Legal Department")
-
-        # Build columns
-        df["col1"] = combine_name_definition(df["Name in arabic"], df["Definition in arabic"])
-        df["col2"] = owner_ar
-        df["col3"] = df["Classification"].replace({
-            "Public": "عام", "Restricted": "مقيد"
-        })
-        df["col4"] = df["Code"]
-        df["col5"] = owner_en
-        df["col6"] = df["Classification"]
-        df["col7"] = ""
-        df["col8"] = combine_name_definition(df["Name"], df["Definition"])
-        df["col9"] = ""
-
-        df_out = df[["col1","col2","col3","col4","col5","col6","col7","col8","col9"]]
-
-        # chunk size (9 per slide)
-        ROWS_PER_SLIDE = 9
-        chunks = [df_out.iloc[i:i+ROWS_PER_SLIDE] for i in range(0, len(df_out), ROWS_PER_SLIDE)]
-        needed_slides = len(chunks)
-        available_slides = len(prs.slides)
-
-        if available_slides < needed_slides:
-            st.warning(f"⚠️ Not enough slides ({available_slides} < {needed_slides}). Only filling available ones.")
-            chunks = chunks[:available_slides]
-
-        # formatters simplified
-        def format_cell(cell, text, color=COLOR_BLACK, bold=False, align=PP_ALIGN.CENTER, rtl=False, size=11):
-            tf = _clear_cell(cell)
-            p = tf.paragraphs[0]
-            _set_alignment(cell, align, True)
-            _add_run(p, text, size, color, bold)
-            if rtl:
-                set_cell_rtl(cell, True)
-
-        # Fill slides
-        for i, chunk in enumerate(chunks):
-            table = None
-            for sh in prs.slides[i].shapes:
-                if sh.has_table:
-                    table = sh.table
-                    break
-            if table is None:
-                continue
-
-            for r in range(1, len(table.rows)):
-                for c in range(len(table.columns)):
-                    table.cell(r, c).text = ""
-
-            for r in range(len(chunk)):
-                row = chunk.iloc[r]
-                # Arabic term/def
-                format_cell(table.cell(r+1,0), row["col1"], rtl=True, align=PP_ALIGN.RIGHT)
-                format_cell(table.cell(r+1,1), row["col2"])
-                # classification AR colors
-                color3 = COLOR_GREEN if "عام" in row["col3"] else COLOR_ORANGE if "مقيد" in row["col3"] else COLOR_BLACK
-                format_cell(table.cell(r+1,2), row["col3"], color3)
-                format_cell(table.cell(r+1,3), row["col4"])
-                format_cell(table.cell(r+1,4), row["col5"])
-                color6 = COLOR_GREEN if "Public" in str(row["col6"]) else COLOR_ORANGE if "Restricted" in str(row["col6"]) else COLOR_BLACK
-                format_cell(table.cell(r+1,5), row["col6"], color6)
-                format_cell(table.cell(r+1,6), row["col7"])
-                format_cell(table.cell(r+1,7), row["col8"], align=PP_ALIGN.LEFT)
-                format_cell(table.cell(r+1,8), row["col9"])
-
-        out_buf = io.BytesIO()
-        prs.save(out_buf)
-        st.download_button("⬇️ Download Dictionary", data=out_buf.getvalue(),
-            file_name="dictionary_output.pptx",
-            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
-
-    elif mode == "TOC":
-        st.subheader("📘 TOC Settings")
-
-        df["col1"] = df["Code"]
-        df["col2"] = df["Name"]
-        df["col3"] = ""
-        df["col4"] = df["Name in arabic"]
-
-        toc_matrix = list(zip(df["col1"], df["col2"], df["col3"], df["col4"]))
-
-        ROWS_PER_TABLE = 15
-        COLS_PER_TABLE = 4
-        rows_per_slide = ROWS_PER_TABLE * 2
-        total_needed = len(toc_matrix)
-
-        cur_idx = 0
-        for slide in prs.slides:
-            tables = [sh.table for sh in slide.shapes if sh.has_table]
-            if len(tables) < 2:
-                continue
-            right, left = tables[0], tables[1]
-
-            for t in [right, left]:
-                for r in range(1, len(t.rows)):
-                    for c in range(len(t.columns)):
-                        t.cell(r,c).text = ""
-
-            for table in [right, left]:
-                for r in range(ROWS_PER_TABLE):
-                    if cur_idx >= total_needed:
+                for r, (_, row) in enumerate(chunk.iterrows(), start=1):
+                    if r >= len(table.rows):
                         break
-                    vals = toc_matrix[cur_idx]
-                    for c in range(COLS_PER_TABLE):
-                        table.cell(r,c).text = "" if vals[c] is None else str(vals[c])
-                        _set_alignment(table.cell(r,c), PP_ALIGN.CENTER, True)
-                    cur_idx += 1
-                if cur_idx >= total_needed:
+                    vals = [
+                        row[code_col],  # col1
+                        f"{row[en_name_col]}:\n{row[en_def_col]}",  # col2
+                        owner_en,  # col3
+                        row[classification_col],  # col4
+                        "",  # col5 (Personal Data)
+                        "",  # col6 (Sensitive)
+                        row[classification_col].replace("Public", "عام").replace("Restricted", "مقيد"),  # col7 Arabic classification
+                        owner_ar,  # col8
+                        f"{row[ar_name_col]}:\n{row[ar_def_col]}"  # col9 Arabic Name+Def
+                    ]
+                    for c, val in enumerate(vals):
+                        tf = _clear_cell(table.cell(r, c))
+                        p = tf.paragraphs[0]
+                        _add_run(p, val, size_pt=11, color=COLOR_BLACK, bold=False)
+
+            out_buf = io.BytesIO()
+            prs.save(out_buf)
+            out_buf.seek(0)
+            st.success("✅ Dictionary file created successfully!")
+            st.download_button("⬇ Download Dictionary (PPTX)", data=out_buf,
+                               file_name="dictionary_output.pptx",
+                               mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+# === Page 2: TOC Generator ===
+if tool == "📑 TOC Generator":
+    st.header("📑 TOC Generator")
+
+    colnames = df.columns.tolist()
+    code_col = st.selectbox("Code Column", colnames)
+    name_en_col = st.selectbox("English Name Column", colnames)
+    name_ar_col = st.selectbox("Arabic Name Column", colnames)
+
+    if st.button("Generate TOC ✅", use_container_width=True):
+        try:
+            prs = Presentation(io.BytesIO(pptx_template.read()))
+            ROWS_PER_TABLE = 15
+            COLS_PER_TABLE = 4
+
+            toc_matrix = []
+            for _, row in df.iterrows():
+                toc_matrix.append([row[code_col], row[name_en_col], "", row[name_ar_col]])
+
+            def get_tables_sorted_by_x(slide):
+                tables = []
+                for sh in slide.shapes:
+                    if sh.has_table:
+                        tables.append((sh.left, sh.table))
+                tables.sort(key=lambda t: t[0], reverse=True)
+                return [t[1] for t in tables]
+
+            def clear_table_data(table):
+                max_rows = len(table.rows) - 1
+                max_cols = len(table.columns)
+                for r in range(1, max_rows+1):
+                    for c in range(max_cols):
+                        table.cell(r, c).text = ""
+
+            cur_idx = 0
+            for slide in prs.slides:
+                tables = get_tables_sorted_by_x(slide)
+                if len(tables) < 2:
+                    continue
+                right_table, left_table = tables[0], tables[1]
+                clear_table_data(right_table)
+                clear_table_data(left_table)
+
+                for tbl in [right_table, left_table]:
+                    for r in range(1, ROWS_PER_TABLE+1):
+                        if cur_idx >= len(toc_matrix):
+                            break
+                        vals = toc_matrix[cur_idx]
+                        for c in range(COLS_PER_TABLE):
+                            tf = _clear_cell(tbl.cell(r, c))
+                            p = tf.paragraphs[0]
+                            _add_run(p, vals[c], size_pt=11, color=COLOR_BLACK, bold=False)
+                        cur_idx += 1
+                if cur_idx >= len(toc_matrix):
                     break
-            if cur_idx >= total_needed:
-                break
 
-        if cur_idx < total_needed:
-            st.warning(f"⚠️ Not enough slides: only {cur_idx} of {total_needed} rows written.")
+            if cur_idx < len(toc_matrix):
+                st.warning(f"⚠ Template slides not enough: only {cur_idx} of {len(toc_matrix)} rows written.")
 
-        out_buf = io.BytesIO()
-        prs.save(out_buf)
-        st.download_button("⬇️ Download TOC", data=out_buf.getvalue(),
-            file_name="toc_output.pptx",
-            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
-
-st.markdown("---")
+            out_buf = io.BytesIO()
+            prs.save(out_buf)
+            out_buf.seek(0)
+            st.success("✅ TOC file created successfully!")
+            st.download_button("⬇ Download TOC (PPTX)", data=out_buf,
+                               file_name="toc_output.pptx",
+                               mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        except Exception as e:
+            st.error(f"Error: {e}")
