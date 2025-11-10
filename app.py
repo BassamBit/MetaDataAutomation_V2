@@ -320,16 +320,6 @@ if run:
             # 6: Personal Data (empty)
             # 7: EN Name+Def
             # 8: Personal Data EN (empty)
-           """ df2[0] = combine_name_def(df[ar_name_col], df[ar_def_col], add_colon=True)
-            df2[1] = owner_ar
-            df2[2] = ar_class_series
-            df2[3] = df[code_col]
-            df2[4] = owner_en
-            df2[5] = df[classification_col]
-            df2[6] = ""
-            df2[7] = combine_name_def(df[en_name_col], df[en_def_col], add_colon=True)
-            df2[8] = "" """
-
             df2[0] = df[code_col]
             df2[1] = combine_name_def(df[en_name_col], df[en_def_col], add_colon=True)
             df2[2] = owner_en
